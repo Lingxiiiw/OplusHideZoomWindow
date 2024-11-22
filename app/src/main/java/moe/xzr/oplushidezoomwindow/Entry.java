@@ -34,7 +34,7 @@ public class Entry implements IXposedHookLoadPackage {
                                 (String) XposedHelpers.callMethod(windowState, "getOwningPackage");
                         String typeName =
                                 XposedHelpers.callMethod(windowState, "getWindowTag").toString();
-
+XposedBridge.log(typeName);
                         if (isZoomWindow ||
                                 // Edge panel
                                 "com.oplus.appplatform".equals(owningPackage) ||
