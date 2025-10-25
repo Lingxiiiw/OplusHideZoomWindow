@@ -1,6 +1,8 @@
 name: Build & Publish Release APK
 
 on:
+  watch:
+    types: [started]
   push:
     tags:
       - '*'
