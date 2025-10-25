@@ -3,81 +3,175 @@ package moe.xzr.oplushidezoomwindow;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class Entry implements IXposedHookLoadPackage {
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (!"android".equals(lpparam.packageName))
-            return;
+    public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+        if (!"android".equals(lpparam.packageName)) return;
 
-        // Part 1: Hide it!
+        XposedBridge.log("OplusHideZoom: hooking ColorOS WindowSurfaceController");
+
+        int FLAG_SECURE = 0x00000040;
+        try {
+            Class<?> lpClass = XposedHelpers.findClass("android.view.WindowManager$LayoutParams", lpparam.classLoader);
+            FLAG_SECURE = XposedHelpers.getStaticIntField(lpClass, "FLAG_SECURE");
+        } catch (Throwable t) {
+            XposedBridge.log("OplusHideZoom: fallback FLAG_SECURE");
+        }
+
         Class<?> windowStateAnimatorClass =
-                XposedHelpers.findClass("com.android.server.wm.WindowStateAnimator",
-                        lpparam.classLoader);
-        XposedHelpers.findAndHookConstructor("com.android.server.wm.WindowSurfaceController",
-                lpparam.classLoader, String.class, int.class, int.class,
-                windowStateAnimatorClass, int.class, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        Object windowStateAnimator = param.args[3];
-                        Object windowState =
-                                XposedHelpers.getObjectField(windowStateAnimator, "mWin");
-                        Object windowStateExt =
-                                XposedHelpers.getObjectField(windowState, "mWindowStateExt");
-                        int mode = (int) XposedHelpers.callMethod(windowState, "getWindowingMode");
+                XposedHelpers.findClass("com.android.server.wm.WindowStateAnimator", lpparam.classLoader);
+        Class<?> surfaceSessionClass =
+                XposedHelpers.findClass("android.view.SurfaceSession", lpparam.classLoader);
 
-                        boolean isZoomWindow = (boolean) XposedHelpers.callMethod(
-                                windowStateExt, "checkIfWindowingModeZoom", mode);
-                        String owningPackage =
-                                (String) XposedHelpers.callMethod(windowState, "getOwningPackage");
-                        String typeName =
-                                XposedHelpers.callMethod(windowState, "getWindowTag").toString();
-XposedBridge.log(typeName);
-                        if (isZoomWindow ||
-                                // Edge panel
-                                "com.oplus.appplatform".equals(owningPackage) ||
-                                // Edge handle
-                                "OplusOSZoomFloatHandleView".equals(typeName) ||
-                                // Screenshot preview
-                                "com.oplus.screenshot/LongshotCapture".equals(typeName) ||
-                                // All apps view of edge panel
-                                "com.coloros.smartsidebar".equals(typeName) ||
-                                // IME
-                                "InputMethod".equals(typeName)) {
-                            int flags = (int) param.args[2];
-                            flags |= 0x00000040;
-                            param.args[2] = flags;
+        Class<?> oplusExtClass = null;
+        try {
+            oplusExtClass = XposedHelpers.findClass("com.oplus.wms.OplusWindowSurfaceControllerExt", lpparam.classLoader);
+            XposedBridge.log("OplusHideZoom: found OplusWindowSurfaceControllerExt");
+        } catch (Throwable ignored) {}
+
+        // Hook 带 Oplus 扩展的构造
+        try {
+            if (oplusExtClass != null) {
+                XposedHelpers.findAndHookConstructor(
+                        "com.android.server.wm.WindowSurfaceController",
+                        lpparam.classLoader,
+                        windowStateAnimatorClass,
+                        surfaceSessionClass,
+                        String.class,
+                        int.class,
+                        int.class,
+                        oplusExtClass,
+                        new WindowHook(FLAG_SECURE, windowStateAnimatorClass));
+                XposedBridge.log("OplusHideZoom: hooked with Oplus ext signature");
+            }
+        } catch (Throwable e) {
+            XposedBridge.log("OplusHideZoom: hook with Oplus ext failed: " + e);
+        }
+
+        // Hook 无 Oplus 扩展构造
+        try {
+            XposedHelpers.findAndHookConstructor(
+                    "com.android.server.wm.WindowSurfaceController",
+                    lpparam.classLoader,
+                    windowStateAnimatorClass,
+                    surfaceSessionClass,
+                    String.class,
+                    int.class,
+                    int.class,
+                    new WindowHook(FLAG_SECURE, windowStateAnimatorClass));
+            XposedBridge.log("OplusHideZoom: hooked default WindowSurfaceController");
+        } catch (Throwable e) {
+            XposedBridge.log("OplusHideZoom: default hook failed: " + e);
+        }
+
+        // Part 2 – 去掉阴影
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "com.android.server.wm.Task",
+                    lpparam.classLoader,
+                    "getShadowRadius",
+                    boolean.class,
+                    XC_MethodReplacement.returnConstant(0.0f));
+        } catch (Throwable t) {
+            XposedBridge.log("OplusHideZoom: failed to hook getShadowRadius: " + t);
+        }
+
+        // Part 3 – 重建 Surface
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "com.android.server.wm.Task",
+                    lpparam.classLoader,
+                    "setWindowingModeInSurfaceTransaction",
+                    int.class, boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Object windowState = XposedHelpers.callMethod(param.thisObject, "getTopVisibleAppMainWindow");
+                                Object root = XposedHelpers.getObjectField(param.thisObject, "mRootWindowContainer");
+                                if (windowState != null) {
+                                    XposedHelpers.callMethod(windowState, "destroySurfaceUnchecked");
+                                    if (root != null)
+                                        XposedHelpers.callMethod(root, "resumeFocusedTasksTopActivities");
+                                }
+                            } catch (Throwable ignored) {}
                         }
-                    }
-                });
+                    });
+        } catch (Throwable e) {
+            XposedBridge.log("OplusHideZoom: failed to hook setWindowingModeInSurfaceTransaction: " + e);
+        }
+    }
 
-        // Part2: Do not render shadow behind zoom window, otherwise it'll still appear.
-        XposedHelpers.findAndHookMethod("com.android.server.wm.Task",
-                lpparam.classLoader, "getShadowRadius", boolean.class,
-                XC_MethodReplacement.returnConstant(0.0f));
+    // -----------------------------
+    // Hook 核心逻辑提取
+    // -----------------------------
+    static class WindowHook extends XC_MethodHook {
+        private final int FLAG_SECURE;
+        private final Class<?> windowStateAnimatorClass;
 
-        // Part3: Rebuild SurfaceController on window mode changes to make sure Part1 will get
-        // applied instantly.
-        XposedHelpers.findAndHookMethod("com.android.server.wm.Task",
-                lpparam.classLoader, "setWindowingModeInSurfaceTransaction",
-                int.class, boolean.class, new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        Object windowState = XposedHelpers.callMethod(
-                                param.thisObject, "getTopVisibleAppMainWindow");
-                        Object activityRecord = XposedHelpers.callMethod(
-                                param.thisObject, "getTopVisibleActivity");
-                        Object rootWindowContainer = XposedHelpers.getObjectField(
-                                param.thisObject, "mRootWindowContainer");
-                        if (windowState == null)
-                            return;
-                        XposedHelpers.callMethod(windowState, "destroySurfaceUnchecked");
-                        XposedHelpers.callMethod(activityRecord, "stopIfPossible");
-                        XposedHelpers.callMethod(
-                                rootWindowContainer, "resumeFocusedTasksTopActivities");
+        WindowHook(int flag, Class<?> animatorCls) {
+            this.FLAG_SECURE = flag;
+            this.windowStateAnimatorClass = animatorCls;
+        }
+
+        @Override
+        protected void beforeHookedMethod(MethodHookParam param) {
+            try {
+                Object winAnimator = null;
+                for (Object arg : param.args) {
+                    if (arg != null && windowStateAnimatorClass.isInstance(arg)) {
+                        winAnimator = arg;
+                        break;
                     }
-                });
+                }
+                if (winAnimator == null) return;
+
+                Object winState = XposedHelpers.getObjectField(winAnimator, "mWin");
+                String tag = String.valueOf(XposedHelpers.callMethod(winState, "getWindowTag"));
+                String pkg = (String) XposedHelpers.callMethod(winState, "getOwningPackage");
+
+                int flagsIndex = -1;
+                for (int i = param.args.length - 1; i >= 0; i--) {
+                    if (param.args[i] instanceof Integer) {
+                        flagsIndex = i;
+                        break;
+                    }
+                }
+                if (flagsIndex == -1) return;
+
+                int flags = (int) param.args[flagsIndex];
+                boolean needHide = false;
+
+                if (tag.contains("LongshotCapture")
+                        || tag.contains("ZoomFloatHandleView")
+                        || "InputMethod".equals(tag)
+                        || "com.oplus.appplatform".equals(pkg)
+                        || "com.coloros.smartsidebar".equals(pkg)) {
+                    needHide = true;
+                }
+
+                // 检查是否为 Zoom 窗口
+                try {
+                    Object ext = XposedHelpers.getObjectField(winState, "mWindowStateExt");
+                    if (ext != null) {
+                        int mode = (int) XposedHelpers.callMethod(winState, "getWindowingMode");
+                        boolean zoom = (boolean) XposedHelpers.callMethod(ext, "checkIfWindowingModeZoom", mode);
+                        if (zoom) needHide = true;
+                    }
+                } catch (Throwable ignored) {}
+
+                if (needHide) {
+                    flags |= FLAG_SECURE;
+                    param.args[flagsIndex] = flags;
+                    XposedBridge.log("OplusHideZoom: FLAG_SECURE -> " + tag + " / " + pkg);
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("OplusHideZoom: error in beforeHookedMethod: " + t);
+            }
+        }
     }
 }
