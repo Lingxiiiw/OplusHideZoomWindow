@@ -1,17 +1,21 @@
 pluginManagement {
     repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
+        gradlePluginPortal()  // 用于插件的下载
+        google()              // 用于 Android 构建工具
+        mavenCentral()        // 用于大部分公共库
+        maven { url 'https://jitpack.io' }  // 添加 JitPack 仓库（用于一些无法在主流仓库找到的库）
     }
 }
+
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS) // 禁止项目本地仓库
     repositories {
-        google()
-        mavenCentral()
-        jcenter()
+        google()         // 用于 Android 相关依赖
+        mavenCentral()   // 用于公共 Maven 依赖
+        jcenter()        // 一些老旧的库可能依赖于 jcenter
+        maven { url 'https://jitpack.io' }  // 可能需要用于 Xposed 或其他非标准库
     }
 }
+
 rootProject.name = "OplusHideZoomWindow"
 include ':app'
